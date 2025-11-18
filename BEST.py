@@ -1,4 +1,3 @@
-# final_champion.py
 import pandas as pd
 import numpy as np
 from collections import defaultdict
@@ -12,7 +11,7 @@ class FinalChampion:
         self.global_stats = {}
         
     def smart_read_csv(self, filename):
-        """Умное чтение CSV"""
+        """Чтение CSV"""
         for sep in [';', ',', '\t', '|']:
             try:
                 df = pd.read_csv(filename, sep=sep, encoding='utf-8')
@@ -23,8 +22,8 @@ class FinalChampion:
         return pd.read_csv(filename, encoding='latin-1')
     
     def build_champion_features(self):
-        """Признаки чемпиона на основе 0.7715"""
-        print("🔧 ПРИЗНАКИ ЧЕМПИОНА...")
+        """Признаки на основе 0.7715"""
+        print("ПРИЗНАКИ...")
         
         train = self.smart_read_csv('train.csv')
         test = self.smart_read_csv('test.csv')
@@ -39,7 +38,7 @@ class FinalChampion:
         if 'has_read' in train.columns:
             train = train[train['has_read'] == 1]
         
-        # СТАТИСТИКА ЧЕМПИОНА
+        # СТАТИСТИКА
         self.global_stats = {
             'mean': train['rating'].mean(),
             'median': train['rating'].median(),
@@ -51,8 +50,8 @@ class FinalChampion:
         
         print(f"   Статистика: mean={self.global_stats['mean']:.3f}, mode={self.global_stats['mode']:.3f}")
         
-        # ПРИЗНАКИ ЧЕМПИОНА - ПОЛЬЗОВАТЕЛИ
-        print("   👤 Признаки чемпиона - пользователи...")
+        # ПРИЗНАКИ - ПОЛЬЗОВАТЕЛИ
+        print("Признаки - пользователи...")
         user_stats = train.groupby('user_id').agg({
             'rating': ['mean', 'count', 'std', 'min', 'max', 'median']
         }).reset_index()
@@ -78,8 +77,8 @@ class FinalChampion:
                 'positivity': row['positivity']
             }
         
-        # ПРИЗНАКИ ЧЕМПИОНА - КНИГИ
-        print("   📚 Признаки чемпиона - книги...")
+        # ПРИЗНАКИ - КНИГИ
+        print("Признаки - книги...")
         book_stats = train.groupby('book_id').agg({
             'rating': ['mean', 'count', 'std', 'min', 'max', 'median']
         }).reset_index()
@@ -108,7 +107,7 @@ class FinalChampion:
         return train, test
     
     def calculate_champion_prediction(self, user_id, book_id):
-        """Логика чемпиона - точная реплика 0.7715 с микрооптимизациями"""
+        """Логика - точная реплика 0.7715 с микрооптимизациями"""
         user = self.user_stats.get(user_id, {})
         book = self.book_stats.get(book_id, {})
         
@@ -120,7 +119,7 @@ class FinalChampion:
         global_mean = self.global_stats['mean']
         global_median = self.global_stats['median']
         
-        # ВЗВЕШИВАНИЕ ЧЕМПИОНА - ТОЧНАЯ ФОРМУЛА 0.7715
+        # ВЗВЕШИВАНИЕ - ТОЧНАЯ ФОРМУЛА 0.7715
         user_conf = user.get('confidence', 0.18)
         book_conf = book.get('popularity', 0.18)
         user_consistency = user.get('consistency', 0.6)
@@ -140,7 +139,7 @@ class FinalChampion:
                         book_combined * book_weight + 
                         global_combined * global_weight)
         
-        # КОРРЕКТИРОВКИ ЧЕМПИОНА
+        # КОРРЕКТИРОВКИ 
         user_generosity = user.get('generosity', 0)
         generosity_boost = user_generosity * 0.32
         
@@ -156,7 +155,7 @@ class FinalChampion:
         book_high_quality = book.get('high_quality', 0)
         quality_boost = book_high_quality * 0.18
         
-        # ФИНАЛЬНАЯ КОМБИНАЦИЯ - ФОРМУЛА 0.7715
+        # ФИНАЛЬНАЯ КОМБ - ФОРМУЛА 0.7715
         final_pred = (pred_weighted + 
                      generosity_boost + 
                      positivity_boost +
@@ -182,7 +181,7 @@ class FinalChampion:
             newness_penalty = max(0, 0.55 - 0.1 * min(user_count, book_count))
             final_pred = (1 - newness_penalty) * final_pred + newness_penalty * global_combined
         
-        # ФИНАЛЬНЫЙ БУСТ ЧЕМПИОНА - ОПТИМАЛЬНЫЙ
+        # БУСТ - ОПТИМАЛЬНЫЙ
         if user_count >= 3 and book_count >= 3:
             final_pred = final_pred * 1.019  # ИДЕАЛЬНЫЙ БУСТ - между 1.018 и 1.022
         elif user_count >= 1 or book_count >= 1:
@@ -193,7 +192,7 @@ class FinalChampion:
         return final_pred
     
     def apply_champion_calibration(self, predictions, train_ratings):
-        """Идеальная калибровка чемпиона"""
+        """Идеальная калибровка"""
         pred_array = np.array(predictions)
         train_array = train_ratings.values
         
@@ -247,24 +246,19 @@ class FinalChampion:
         return np.clip(pred_array, 1.0, 10.0)
     
     def run_champion(self):
-        """ФИНАЛЬНЫЙ ЗАПУСК ЧЕМПИОНА"""
-        print("🚀 ФИНАЛЬНЫЙ ЗАПУСК ЧЕМПИОНА!")
-        print("💎 Рекорд: 0.7715")
-        print("✨ Точная реплика формулы 0.7715 с микрооптимизациями")
-        print("🎯 Target: 0.772+")
-        print("⚡ ПОСЛЕДНЯЯ ПОПЫТКА - ВСЕ ИЛИ НИЧЕГО!")
-        print("=" * 65)
+        """ЗАПУСК"""
+        print("ЗАПУСК!")
         
         try:
             train, test = self.build_champion_features()
             
-            print("🎯 Создание предсказаний чемпиона...")
+            print("Создание предсказаний...")
             predictions = []
             for i, row in test.iterrows():
                 pred = self.calculate_champion_prediction(row['user_id'], row['book_id'])
                 predictions.append(pred)
             
-            print("🔧 Применение идеальной калибровки...")
+            print("Применение идеальной калибровки...")
             calibrated_predictions = self.apply_champion_calibration(predictions, train['rating'])
             
             submission = test[['user_id', 'book_id']].copy()
@@ -274,18 +268,12 @@ class FinalChampion:
             
             submission.to_csv('final_champion.csv', index=False)
             
-            print(f"\n🎉 ФАЙЛ final_champion.csv СОЗДАН!")
-            print("💪 ПОСЛЕДНИЙ ШАНС!")
-            print("📈 Гарантированные улучшения:")
-            print("   • Точная формула 0.7715")
-            print("   • Идеальный буст 1.019 (оптимум)")
-            print("   • Улучшенная калибровка квантилей")
-            print("   • Микрооптимизации весов")
+            print(f"\n ФАЙЛ final_champion.csv СОЗДАН!")
             
             return submission
             
         except Exception as e:
-            print(f"❌ Критическая ошибка: {e}")
+            print(f"Критическая ошибка: {e}")
             return self.create_perfect_backup()
     
     def create_perfect_backup(self):
@@ -315,19 +303,19 @@ class FinalChampion:
         for _, row in test.iterrows():
             user_pred = user_means.get(row['user_id'], global_mean)
             book_pred = book_means.get(row['book_id'], global_mean)
-            pred = (user_pred * 0.65 + book_pred * 0.35) * 1.018  # Формула победителя
+            pred = (user_pred * 0.65 + book_pred * 0.35) * 1.018  # Формула
             predictions.append(pred)
         
         submission = test[['user_id', 'book_id']].copy()
         submission['rating_predict'] = np.clip(predictions, 1, 10)
         submission.to_csv('perfect_backup.csv', index=False)
         
-        print("✅ perfect_backup.csv создан!")
+        print("Cоздан!")
         return submission
     
     def champion_analysis(self, submission, train):
-        """Анализ чемпиона"""
-        print("\n📊 АНАЛИЗ ЧЕМПИОНА:")
+        """Анализ"""
+        print("\nАНАЛИЗ:")
         
         pred_stats = submission['rating_predict'].describe()
         train_stats = train['rating'].describe()
@@ -340,24 +328,16 @@ class FinalChampion:
         mean_diff = abs(pred_stats['mean'] - train_stats['mean'])
         median_diff = abs(np.median(submission['rating_predict']) - train_stats['50%'])
         
-        print(f"\n✅ Идеальная калибровка:")
-        print(f"   Среднее: {'✓' if mean_diff < 0.04 else '⚠️'} (разница: {mean_diff:.3f})")
-        print(f"   Медиана: {'✓' if median_diff < 0.05 else '⚠️'} (разница: {median_diff:.3f})")
-        print(f"   Буст чемпиона: 1.019 (идеальный)")
+        print(f"\n Идеальная калибровка:")
+        print(f"   Среднее: {'✓' if mean_diff < 0.04 else 'err'} (разница: {mean_diff:.3f})")
+        print(f"   Медиана: {'✓' if median_diff < 0.05 else 'err'} (разница: {median_diff:.3f})")
 
-# ФИНАЛЬНЫЙ ЗАПУСК
+# ЗАПУСК
 if __name__ == "__main__":
-    print("🔥 ФИНАЛЬНАЯ БИТВА!")
-    print("💎 Наш рекорд: 0.7715")
-    print("✨ Возвращаем проверенную формулу победителя")
-    print("🎯 Target: 0.772+")
-    print("⚡ ПОСЛЕДНЯЯ ПОПЫТКА - ДЕЛАЕМ ИСТОРИЮ!")
+    print("ДЕЛАЕМ ИСТОРИЮ!")
     print("=" * 70)
     
     champion = FinalChampion()
     submission = champion.run_champion()
     
-    print(f"\n🎉 ФИНАЛЬНОЕ РЕШЕНИЕ ЧЕМПИОНА ГОТОВО!")
-    print("📤 Отправляйте final_champion.csv")
-    print("💪 МЫ ВЕРИМ В ТЕБЯ!")
-    print("🚀 ДЕЛАЕМ ИСТОРИЮ!")
+    print(f"\n РЕШЕНИЕ ГОТОВО!")
