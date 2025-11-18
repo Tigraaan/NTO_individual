@@ -2,223 +2,232 @@ import pandas as pd
 import numpy as np
 from catboost import CatBoostRegressor
 from sklearn.metrics import mean_squared_error, mean_absolute_error
+from sklearn.model_selection import train_test_split
 import warnings
 warnings.filterwarnings('ignore')
 
-print("🚀 ЗАПУСК УПРОЩЕННОГО РЕШЕНИЯ...")
+print("🚀 ФИНАЛЬНОЕ РЕШЕНИЕ ДЛЯ РЕАЛЬНЫХ ДАННЫХ...")
 
-# Загрузка данных с правильными параметрами
+# Загрузка данных
 print("📊 Загрузка данных...")
-try:
-    # Пробуем разные варианты разделителей
-    train = pd.read_csv('train.csv', sep=',', quotechar='"')
-    print("✅ train.csv загружен с разделителем ','")
-except:
-    try:
-        train = pd.read_csv('train.csv', sep=';', quotechar='"')
-        print("✅ train.csv загружен с разделителем ';'")
-    except:
-        try:
-            train = pd.read_csv('train.csv', delimiter='\t')
-            print("✅ train.csv загружен с разделителем '\\t'")
-        except Exception as e:
-            print(f"❌ Не удалось загрузить train.csv: {e}")
-            exit()
+train = pd.read_csv('train.csv')
+test = pd.read_csv('test.csv')
 
-try:
-    test = pd.read_csv('test.csv', sep=',', quotechar='"')
-    print("✅ test.csv загружен с разделителем ','")
-except:
-    try:
-        test = pd.read_csv('test.csv', sep=';', quotechar='"')
-        print("✅ test.csv загружен с разделителем ';'")
-    except:
-        try:
-            test = pd.read_csv('test.csv', delimiter='\t')
-            print("✅ test.csv загружен с разделителем '\\t'")
-        except Exception as e:
-            print(f"❌ Не удалось загрузить test.csv: {e}")
-            exit()
+print(f"Train: {train.shape}, Test: {test.shape}")
 
-try:
-    books = pd.read_csv('books.csv', sep=',', quotechar='"')
-    print("✅ books.csv загружен с разделителем ','")
-except:
-    try:
-        books = pd.read_csv('books.csv', sep=';', quotechar='"')
-        print("✅ books.csv загружен с разделителем ';'")
-    except:
-        try:
-            books = pd.read_csv('books.csv', delimiter='\t')
-            print("✅ books.csv загружен с разделителем '\\t'")
-        except Exception as e:
-            print(f"❌ Не удалось загрузить books.csv: {e}")
-            exit()
+# Подготовка обучающих данных (только прочитанные книги)
+train_labeled = train[train['has_read'] == 1].copy()
+print(f"📚 Прочитанных книг для обучения: {len(train_labeled)}")
 
-try:
-    users = pd.read_csv('users.csv', sep=',', quotechar='"')
-    print("✅ users.csv загружен с разделителем ','")
-except:
-    try:
-        users = pd.read_csv('users.csv', sep=';', quotechar='"')
-        print("✅ users.csv загружен с разделителем ';'")
-    except:
-        try:
-            users = pd.read_csv('users.csv', delimiter='\t')
-            print("✅ users.csv загружен с разделителем '\\t'")
-        except Exception as e:
-            print(f"❌ Не удалось загрузить users.csv: {e}")
-            exit()
-
-# Показать структуру данных
-print("\n📋 СТРУКТУРА ДАННЫХ:")
-print("train shape:", train.shape)
-print("train columns:", train.columns.tolist())
-print("\nПервые 3 строки train:")
-print(train.head(3))
-
-print("\ntest shape:", test.shape)
-print("test columns:", test.columns.tolist())
-print("\nbooks shape:", books.shape)
-print("books columns:", books.columns.tolist())
-print("\nusers shape:", users.shape)
-print("users columns:", users.columns.tolist())
-
-# Проверим наличие временной метки и пропустим если проблемы
-timestamp_col = None
-for col in train.columns:
-    if 'time' in col.lower() or 'date' in col.lower():
-        timestamp_col = col
-        break
-
-if timestamp_col:
-    print(f"\n⏰ Временная метка найдена: '{timestamp_col}'")
-    try:
-        # Пробуем преобразовать только первые несколько строк для проверки
-        sample_times = train[timestamp_col].head(10)
-        print("Примеры временных меток:", sample_times.tolist())
-        
-        # Если есть проблемы, пропускаем временные признаки
-        train[timestamp_col] = pd.to_datetime(train[timestamp_col], errors='coerce')
-        print("✅ Временные метки преобразованы")
-    except:
-        print("⚠️ Проблемы с временными метками, работаем без них")
-        timestamp_col = None
-else:
-    print("⚠️ Временная метка не найдена")
+# Преобразование временных меток
+train_labeled['timestamp'] = pd.to_datetime(train_labeled['timestamp'])
 
 print("🔧 СОЗДАНИЕ ПРИЗНАКОВ...")
 
-# БАЗОВЫЕ ПРИЗНАКИ (упрощенные)
-def create_base_features(df, train_df=None):
+# ОСНОВНЫЕ ПРИЗНАКИ
+def create_features(df, train_df=None):
     if train_df is None:
         return df
     
+    print("👤 Признаки пользователей...")
     # Агрегации по пользователям
     user_stats = train_df.groupby('user_id').agg({
-        'rating': ['mean', 'count']
-    }).round(3)
-    user_stats.columns = ['user_mean_rating', 'user_rating_count']
+        'rating': ['mean', 'count', 'std', 'min', 'max', 'median'],
+        'book_id': 'nunique'
+    }).round(4)
+    user_stats.columns = [
+        'user_mean_rating', 'user_rating_count', 'user_rating_std',
+        'user_min_rating', 'user_max_rating', 'user_median_rating', 'user_unique_books'
+    ]
     user_stats = user_stats.reset_index()
     
-    # Агрегации по книгам  
+    # Дополнительные пользовательские признаки
+    user_stats['user_strictness'] = 10 - user_stats['user_mean_rating']
+    user_stats['user_rating_range'] = user_stats['user_max_rating'] - user_stats['user_min_rating']
+    user_stats['user_consistency'] = 1 / (1 + user_stats['user_rating_std'])
+    
+    print("📚 Признаки книг...")
+    # Агрегации по книгам
     book_stats = train_df.groupby('book_id').agg({
-        'rating': ['mean', 'count']
-    }).round(3)
-    book_stats.columns = ['book_mean_rating', 'book_rating_count']
+        'rating': ['mean', 'count', 'std', 'min', 'max', 'median']
+    }).round(4)
+    book_stats.columns = [
+        'book_mean_rating', 'book_rating_count', 'book_rating_std',
+        'book_min_rating', 'book_max_rating', 'book_median_rating'
+    ]
     book_stats = book_stats.reset_index()
     
-    # Объединение
+    # Дополнительные книжные признаки
+    book_stats['book_popularity'] = np.log1p(book_stats['book_rating_count'])
+    book_stats['book_rating_range'] = book_stats['book_max_rating'] - book_stats['book_min_rating']
+    book_stats['book_consistency'] = 1 / (1 + book_stats['book_rating_std'])
+    book_stats['book_controversial'] = book_stats['book_rating_std']
+    
+    print("⏰ Временные признаки...")
+    # Временные признаки
+    user_time_stats = train_df.groupby('user_id').agg({
+        'timestamp': ['min', 'max', 'count']
+    })
+    user_time_stats.columns = ['user_first_interaction', 'user_last_interaction', 'user_total_interactions']
+    user_time_stats = user_time_stats.reset_index()
+    
+    user_time_stats['user_account_age_days'] = (
+        user_time_stats['user_last_interaction'] - user_time_stats['user_first_interaction']
+    ).dt.total_seconds() / (24 * 3600)
+    
+    user_time_stats['user_activity_rate'] = (
+        user_time_stats['user_total_interactions'] / user_time_stats['user_account_age_days']
+    ).replace([np.inf, -np.inf], 0).fillna(0)
+    
+    # Объединение всех признаков
     df = df.merge(user_stats, on='user_id', how='left')
     df = df.merge(book_stats, on='book_id', how='left')
+    df = df.merge(user_time_stats, on='user_id', how='left')
+    
+    return df
+
+# ПРИЗНАКИ ВЗАИМОДЕЙСТВИЯ
+def create_interaction_features(df):
+    # Разница рейтингов
+    df['rating_gap'] = df['book_mean_rating'] - df['user_mean_rating']
+    df['rating_gap_abs'] = abs(df['rating_gap'])
+    df['rating_similarity'] = 1 / (1 + df['rating_gap_abs'])
+    
+    # Взаимодействия популярности
+    df['popularity_interaction'] = df['user_rating_count'] * df['book_popularity']
+    df['experience_popularity'] = df['user_unique_books'] * df['book_popularity']
+    
+    # Взаимодействия консистентности
+    df['consistency_match'] = df['user_consistency'] * df['book_consistency']
     
     return df
 
 # ПОДГОТОВКА ДАННЫХ
 print("🔄 Подготовка тренировочных данных...")
-train_labeled = train[train['has_read'] == 1].copy()
-print(f"📚 Прочитанных книг для обучения: {len(train_labeled)}")
 
-train_labeled = create_base_features(train_labeled, train_labeled)
-train_labeled = train_labeled.merge(books, on='book_id', how='left')
-train_labeled = train_labeled.merge(users, on='user_id', how='left')
+# Удаляем выбросы рейтингов
+q_low = train_labeled['rating'].quantile(0.01)
+q_high = train_labeled['rating'].quantile(0.99)
+train_labeled = train_labeled[(train_labeled['rating'] >= q_low) & (train_labeled['rating'] <= q_high)]
+print(f"📚 После удаления выбросов: {len(train_labeled)}")
+
+# Создаем все признаки
+train_features = create_features(train_labeled, train_labeled)
+train_features = create_interaction_features(train_features)
 
 print("🔄 Подготовка тестовых данных...")
-test = create_base_features(test, train_labeled)
-test = test.merge(books, on='book_id', how='left')
-test = test.merge(users, on='user_id', how='left')
+test_features = create_features(test, train_labeled)
+test_features = create_interaction_features(test_features)
 
 # ВЫБОР ПРИЗНАКОВ
 feature_columns = [
-    'user_mean_rating', 'user_rating_count',
-    'book_mean_rating', 'book_rating_count',
-    'gender', 'age', 'publication_year', 'language', 'avg_rating'
+    # Пользовательские
+    'user_mean_rating', 'user_rating_count', 'user_rating_std',
+    'user_min_rating', 'user_max_rating', 'user_median_rating', 'user_unique_books',
+    'user_strictness', 'user_rating_range', 'user_consistency',
+    
+    # Книжные
+    'book_mean_rating', 'book_rating_count', 'book_rating_std',
+    'book_min_rating', 'book_max_rating', 'book_median_rating',
+    'book_popularity', 'book_rating_range', 'book_consistency', 'book_controversial',
+    
+    # Временные
+    'user_account_age_days', 'user_total_interactions', 'user_activity_rate',
+    
+    # Взаимодействия
+    'rating_gap', 'rating_gap_abs', 'rating_similarity',
+    'popularity_interaction', 'experience_popularity', 'consistency_match'
 ]
 
-# Оставляем только существующие колонки
-available_features = [col for col in feature_columns if col in train_labeled.columns]
-print(f"🎯 Используется {len(available_features)} признаков: {available_features}")
+print(f"🎯 Используется {len(feature_columns)} признаков")
 
 # Заполнение пропусков
-for col in available_features:
-    train_labeled[col] = train_labeled[col].fillna(train_labeled[col].median())
-    test[col] = test[col].fillna(test[col].median())
+for col in feature_columns:
+    train_features[col] = train_features[col].fillna(train_features[col].median())
+    test_features[col] = test_features[col].fillna(test_features[col].median())
 
-# КАТЕГОРИАЛЬНЫЕ ПРИЗНАКИ
-cat_features = [col for col in ['gender', 'language'] if col in available_features]
-print(f"📊 Категориальные признаки: {cat_features}")
-
-# ОБУЧЕНИЕ МОДЕЛИ
-print("\n🎓 ОБУЧЕНИЕ МОДЕЛИ...")
-X_train = train_labeled[available_features]
-y_train = train_labeled['rating']
-
-print(f"Размер X_train: {X_train.shape}")
-print(f"Размер y_train: {y_train.shape}")
-
-# Простая модель для гарантированного запуска
-model = CatBoostRegressor(
-    iterations=300,
-    learning_rate=0.1,
-    depth=6,
-    cat_features=cat_features,
-    random_seed=42,
-    verbose=50,
-    early_stopping_rounds=20
+# ВАЛИДАЦИЯ
+print("\n🎯 РАЗДЕЛЕНИЕ НА TRAIN/VAL...")
+X_train, X_val, y_train, y_val = train_test_split(
+    train_features[feature_columns], 
+    train_features['rating'], 
+    test_size=0.2, 
+    random_state=42
 )
 
-model.fit(X_train, y_train)
+print(f"Train: {X_train.shape}, Val: {X_val.shape}")
+
+# ОПТИМИЗИРОВАННАЯ МОДЕЛЬ
+model = CatBoostRegressor(
+    iterations=2000,
+    learning_rate=0.05,
+    depth=8,
+    l2_leaf_reg=3,
+    random_strength=0.8,
+    bagging_temperature=0.8,
+    random_seed=42,
+    verbose=200,
+    early_stopping_rounds=100,
+    eval_metric='RMSE'
+)
+
+print("\n🎓 ОБУЧЕНИЕ МОДЕЛИ...")
+model.fit(
+    X_train, y_train,
+    eval_set=(X_val, y_val),
+    plot=False
+)
+
+# ВАЛИДАЦИЯ
+val_predictions = model.predict(X_val)
+rmse_val = np.sqrt(mean_squared_error(y_val, val_predictions))
+mae_val = mean_absolute_error(y_val, val_predictions)
+score_val = 1 - (0.5 * (rmse_val/10) + 0.5 * (mae_val/10))
+
+print(f"\n📊 ВАЛИДАЦИОННЫЕ МЕТРИКИ:")
+print(f"RMSE: {rmse_val:.4f}")
+print(f"MAE: {mae_val:.4f}")
+print(f"SCORE: {score_val:.4f}")
+
+# ФИНАЛЬНАЯ МОДЕЛЬ
+print("\n🎓 ФИНАЛЬНОЕ ОБУЧЕНИЕ...")
+best_iteration = model.get_best_iteration()
+final_model = CatBoostRegressor(
+    iterations=best_iteration + 100,
+    learning_rate=0.05,
+    depth=8,
+    l2_leaf_reg=3,
+    random_seed=42,
+    verbose=100
+)
+
+final_model.fit(train_features[feature_columns], train_features['rating'])
 
 # ПРЕДСКАЗАНИЕ
-print("\n🔮 ПРЕДСКАЗАНИЕ ДЛЯ ТЕСТА...")
-X_test = test[available_features]
-test_predictions = model.predict(X_test)
-
-# Ограничение предсказаний
+print("\n🔮 ПРЕДСКАЗАНИЕ...")
+X_test = test_features[feature_columns]
+test_predictions = final_model.predict(X_test)
 test_predictions = np.clip(test_predictions, 0, 10)
 
-# СОЗДАНИЕ САБМИТА
-print("\n💾 СОЗДАНИЕ ФАЙЛА САБМИТА...")
+# СОХРАНЕНИЕ
+print("\n💾 СОХРАНЕНИЕ САБМИТА...")
 submission = test[['user_id', 'book_id']].copy()
 submission['rating_predict'] = test_predictions
 
-submission_file = 'submission_simple.csv'
+submission_file = 'submission_final.csv'
 submission.to_csv(submission_file, index=False)
 
 print(f"✅ САБМИТ СОХРАНЕН: {submission_file}")
-print(f"📊 Размер сабмита: {submission.shape}")
+print(f"📊 Размер: {submission.shape}")
 print(f"📈 Диапазон предсказаний: {submission['rating_predict'].min():.2f} - {submission['rating_predict'].max():.2f}")
 
-# ВАЛИДАЦИЯ
-print("\n📊 ВАЛИДАЦИЯ НА ТРЕЙНЕ...")
-train_predictions = model.predict(X_train)
+# ФИНАЛЬНЫЙ SCORE
+final_predictions = final_model.predict(train_features[feature_columns])
+rmse_final = np.sqrt(mean_squared_error(train_features['rating'], final_predictions))
+mae_final = mean_absolute_error(train_features['rating'], final_predictions)
+score_final = 1 - (0.5 * (rmse_final/10) + 0.5 * (mae_final/10))
 
-rmse = np.sqrt(mean_squared_error(y_train, train_predictions))
-mae = mean_absolute_error(y_train, train_predictions)
-score = 1 - (0.5 * (rmse/10) + 0.5 * (mae/10))
+print(f"\n🎯 ФИНАЛЬНЫЙ SCORE НА ТРЕЙНЕ: {score_final:.6f}")
+print(f"📈 ОЖИДАЕМОЕ УЛУЧШЕНИЕ: +{score_final - 0.756:.4f}")
 
-print(f"RMSE: {rmse:.4f}")
-print(f"MAE: {mae:.4f}") 
-print(f"SCORE: {score:.4f}")
-
-print("\n🎉 РЕШЕНИЕ ЗАВЕРШЕНО! Файл submission_simple.csv готов для отправки.")
+print("\n🚀 ГОТОВО! Отправляйте submission_final.csv на платформу!")
