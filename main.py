@@ -1,358 +1,478 @@
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, KFold
 from sklearn.metrics import mean_squared_error, mean_absolute_error
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.preprocessing import LabelEncoder
+from sklearn.preprocessing import StandardScaler
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor, ExtraTreesRegressor, VotingRegressor
+from sklearn.linear_model import Ridge
 import warnings
 warnings.filterwarnings('ignore')
 
-class SmartBookRatingPredictor:
+class PowerRatingPredictor:
     def __init__(self):
         self.models = {}
-        self.feature_columns = []
-        self.label_encoders = {}
+        self.scaler = StandardScaler()
+        self.feature_importance = {}
         
-    def load_data(self):
-        """Загрузка всех необходимых данных"""
-        print("Загрузка данных...")
+    def load_and_analyze(self):
+        """Загрузка и глубокий анализ данных"""
+        print("🧠 ЗАГРУЗКА И АНАЛИЗ")
         
         self.train = pd.read_csv('train.csv', parse_dates=['timestamp'])
         self.test = pd.read_csv('test.csv')
         self.books = pd.read_csv('books.csv')
         self.users = pd.read_csv('users.csv')
         self.book_genres = pd.read_csv('book_genres.csv')
+        self.genres = pd.read_csv('genres.csv')
         
-        print(f"Train: {len(self.train)} записей")
-        print(f"Test: {len(self.test)} записей")
-        print(f"Books: {len(self.books)} книг")
-        print(f"Users: {len(self.users)} пользователей")
-        
-    def analyze_target_distribution(self):
-        """Анализ распределения целевой переменной"""
-        print("\n=== АНАЛИЗ РАСПРЕДЕЛЕНИЯ ОЦЕНОК ===")
-        
+        # ГЛУБОКИЙ АНАЛИЗ
         ratings = self.train[self.train['has_read'] == 1]['rating']
-        
-        print("Распределение оценок:")
+        print(f"📊 РАСПРЕДЕЛЕНИЕ ОЦЕНОК:")
+        self.rating_stats = {}
         for i in range(1, 11):
             count = (ratings == i).sum()
-            percentage = (ratings == i).mean() * 100
-            print(f"Оценка {i}: {count:5d} записей ({percentage:5.1f}%)")
+            pct = (ratings == i).mean() * 100
+            self.rating_stats[i] = pct
+            print(f"  {i}: {count:6d} ({pct:5.1f}%)")
         
-        print(f"\nОбщая статистика:")
-        print(f"Среднее: {ratings.mean():.2f}")
-        print(f"Медиана: {ratings.median():.2f}")
-        print(f"Стандартное отклонение: {ratings.std():.2f}")
+        # Анализ пользователей
+        user_analysis = self.train[self.train['has_read'] == 1].groupby('user_id')['rating'].agg(['mean', 'count', 'std'])
+        print(f"\n👤 АНАЛИЗ ПОЛЬЗОВАТЕЛЕЙ:")
+        print(f"  Средняя оценка: {user_analysis['mean'].mean():.2f}")
+        print(f"  Медиана книг на пользователя: {user_analysis['count'].median():.0f}")
+        print(f"  Стандартное отклонение оценок: {user_analysis['std'].mean():.2f}")
         
-        # Особое внимание на высокие оценки
-        high_ratings = (ratings >= 9).sum()
-        print(f"\nОценки 9-10: {high_ratings} записей ({(ratings >= 9).mean()*100:.1f}%)")
+        return self.rating_stats
+    
+    def create_power_features(self, df, is_train=True):
+        """Создание мощных признаков с глубоким feature engineering"""
+        print("🚀 СОЗДАНИЕ МОЩНЫХ ПРИЗНАКОВ")
         
-        return ratings
-
-    def create_smart_features(self, df, is_train=True):
-        """Создание умных признаков, основанных на анализе данных"""
         features = df.copy()
         
         # Базовые объединения
         features = features.merge(self.books, on='book_id', how='left')
         features = features.merge(self.users, on='user_id', how='left')
         
-        # === КРИТИЧЕСКИ ВАЖНЫЕ ПРИЗНАКИ ===
-        
-        # 1. Средний рейтинг книги (самый важный признак)
-        features['book_avg_rating'] = features['avg_rating']
-        
-        # 2. Возраст книги
-        features['book_age'] = 2023 - features['publication_year']
-        features['book_age'] = features['book_age'].fillna(0).clip(0, 100)
-        
-        # 3. Количество жанров у книги
-        book_genre_counts = self.book_genres.groupby('book_id').size().reset_index(name='genre_count')
-        features = features.merge(book_genre_counts, on='book_id', how='left')
-        features['genre_count'] = features['genre_count'].fillna(0)
-        
-        # 4. Статистики пользователей (только по ПРОЧИТАННЫМ книгам)
+        # === POWER USER FEATURES ===
         if is_train:
-            user_read_stats = self.train[self.train['has_read'] == 1].groupby('user_id').agg({
-                'rating': ['mean', 'std', 'count'],
-                'book_id': 'nunique'
-            }).round(3)
-            user_read_stats.columns = ['user_rating_mean', 'user_rating_std', 'user_books_rated', 'user_unique_books']
-            self.user_read_stats = user_read_stats.reset_index()
+            # Расширенные статистики пользователей
+            user_power_stats = self.train[self.train['has_read'] == 1].groupby('user_id').agg({
+                'rating': ['mean', 'std', 'count', 'min', 'max', 
+                          lambda x: (x >= 9).sum(),    # высокие оценки
+                          lambda x: (x <= 5).sum(),    # низкие оценки
+                          lambda x: x.skew()],         # асимметрия
+                'book_id': 'nunique',
+                'timestamp': ['min', 'max']
+            })
+            user_power_stats.columns = [
+                'user_mean', 'user_std', 'user_count', 'user_min', 'user_max',
+                'user_high', 'user_low', 'user_skew',
+                'user_unique_books', 'user_first', 'user_last'
+            ]
             
-            # Статистики по списку "хочу прочитать"
-            user_wishlist_stats = self.train[self.train['has_read'] == 0].groupby('user_id').agg({
-                'book_id': 'count'
-            }).reset_index().rename(columns={'book_id': 'user_wishlist_count'})
-            self.user_wishlist_stats = user_wishlist_stats
-        
-        # Добавляем пользовательские статистики
-        features = features.merge(self.user_read_stats, on='user_id', how='left')
-        features = features.merge(self.user_wishlist_stats, on='user_id', how='left')
-        
-        # 5. Популярность книги (сколько раз её читали)
-        if is_train:
-            book_popularity = self.train[self.train['has_read'] == 1].groupby('book_id').agg({
-                'user_id': 'count'
-            }).reset_index().rename(columns={'user_id': 'book_read_count'})
-            self.book_popularity = book_popularity
-        
-        features = features.merge(self.book_popularity, on='book_id', how='left')
-        
-        # 6. Авторские статистики
-        if is_train:
-            author_stats = self.train[self.train['has_read'] == 1].merge(
+            # Временные характеристики
+            user_power_stats['user_activity_days'] = (user_power_stats['user_last'] - user_power_stats['user_first']).dt.days
+            user_power_stats['user_reading_speed'] = user_power_stats['user_unique_books'] / user_power_stats['user_activity_days']
+            user_power_stats['user_rating_range'] = user_power_stats['user_max'] - user_power_stats['user_min']
+            user_power_stats['user_consistency'] = 1 / (1 + user_power_stats['user_std'])
+            user_power_stats['user_preference_strength'] = user_power_stats['user_high'] / user_power_stats['user_count']
+            user_power_stats['user_critical_ratio'] = user_power_stats['user_low'] / user_power_stats['user_count']
+            
+            # Жанровые предпочтения
+            user_genre_power = self.train[self.train['has_read'] == 1].merge(
+                self.book_genres, on='book_id'
+            ).groupby('user_id').agg({
+                'genre_id': 'nunique',
+                'rating': ['mean', 'std']
+            })
+            user_genre_power.columns = ['user_genre_diversity', 'user_genre_mean', 'user_genre_std']
+            
+            user_power_stats = user_power_stats.merge(user_genre_power, on='user_id', how='left')
+            
+            self.user_power_stats = user_power_stats.reset_index()
+            
+            # === POWER BOOK FEATURES ===
+            book_power_stats = self.train[self.train['has_read'] == 1].groupby('book_id').agg({
+                'rating': ['mean', 'std', 'count', 'min', 'max',
+                          lambda x: x.quantile(0.75),  # 75% перцентиль
+                          lambda x: x.quantile(0.25),  # 25% перцентиль
+                          lambda x: (x >= 8).sum()],   # высокие оценки
+                'user_id': 'nunique',
+                'timestamp': ['min', 'max']
+            })
+            book_power_stats.columns = [
+                'book_mean', 'book_std', 'book_count', 'book_min', 'book_max',
+                'book_q75', 'book_q25', 'book_high_count',
+                'book_unique_readers', 'book_first', 'book_last'
+            ]
+            
+            book_power_stats['book_rating_iqr'] = book_power_stats['book_q75'] - book_power_stats['book_q25']
+            book_power_stats['book_rating_span'] = (book_power_stats['book_last'] - book_power_stats['book_first']).dt.days
+            book_power_stats['book_controversy'] = book_power_stats['book_std'] * np.log1p(book_power_stats['book_count'])
+            book_power_stats['book_quality_score'] = book_power_stats['book_mean'] * (1 - book_power_stats['book_std']/10)
+            book_power_stats['book_popularity_score'] = book_power_stats['book_mean'] * np.log1p(book_power_stats['book_count'])
+            book_power_stats['book_high_ratio'] = book_power_stats['book_high_count'] / book_power_stats['book_count']
+            
+            # Жанровые особенности
+            book_genre_power = self.book_genres.groupby('book_id').agg({
+                'genre_id': ['count', 'nunique']
+            })
+            book_genre_power.columns = ['book_total_genres', 'book_unique_genres']
+            
+            book_power_stats = book_power_stats.merge(book_genre_power, on='book_id', how='left')
+            
+            self.book_power_stats = book_power_stats.reset_index()
+            
+            # === POWER AUTHOR FEATURES ===
+            author_power_stats = self.train[self.train['has_read'] == 1].merge(
                 self.books[['book_id', 'author_id']], on='book_id'
             ).groupby('author_id').agg({
-                'rating': ['mean', 'count']
-            }).round(3)
-            author_stats.columns = ['author_avg_rating', 'author_books_rated']
-            self.author_stats = author_stats.reset_index()
+                'rating': ['mean', 'std', 'count'],
+                'user_id': 'nunique',
+                'book_id': 'nunique'
+            })
+            author_power_stats.columns = [
+                'author_mean', 'author_std', 'author_rating_count',
+                'author_unique_readers', 'author_unique_books'
+            ]
+            
+            author_power_stats['author_popularity'] = author_power_stats['author_unique_readers'] * author_power_stats['author_mean']
+            author_power_stats['author_consistency'] = 1 / (1 + author_power_stats['author_std'])
+            
+            self.author_power_stats = author_power_stats.reset_index()
+            
+            # === USER-AUTHOR INTERACTION POWER ===
+            user_author_power = self.train[self.train['has_read'] == 1].merge(
+                self.books[['book_id', 'author_id']], on='book_id'
+            ).groupby(['user_id', 'author_id']).agg({
+                'rating': ['mean', 'count', 'std']
+            })
+            user_author_power.columns = ['user_author_mean', 'user_author_count', 'user_author_std']
+            
+            user_author_power['user_author_loyalty'] = user_author_power['user_author_mean'] * np.log1p(user_author_power['user_author_count'])
+            
+            self.user_author_power = user_author_power.reset_index()
         
-        features = features.merge(self.author_stats, on='author_id', how='left')
+        # СЛИВАЕМ ВСЕ МОЩНЫЕ ПРИЗНАКИ
+        features = features.merge(self.user_power_stats, on='user_id', how='left')
+        features = features.merge(self.book_power_stats, on='book_id', how='left')
+        features = features.merge(self.author_power_stats, on='author_id', how='left')
+        features = features.merge(self.user_author_power, on=['user_id', 'author_id'], how='left')
         
-        # 7. Временные признаки (только для train)
-        if is_train and 'timestamp' in features.columns:
+        # === SUPER ENGINEERED FEATURES ===
+        # 1. Синергия пользователь-книга
+        features['super_synergy'] = (
+            features['user_mean'] * features['book_quality_score'] * 
+            features['user_consistency']
+        )
+        
+        # 2. Предсказуемость оценки
+        features['predictability_score'] = (
+            1 / (1 + features['user_std']) * 
+            1 / (1 + features['book_std']) *
+            features['user_consistency']
+        )
+        
+        # 3. Совпадение уровней
+        features['level_alignment'] = 1 - np.abs(features['user_mean'] - features['book_mean']) / 10
+        
+        # 4. Взвешенная популярность
+        features['weighted_popularity'] = features['book_popularity_score'] * features['user_preference_strength']
+        
+        # 5. Возрастная совместимость
+        features['book_age'] = 2023 - features['publication_year']
+        features['age_compatibility'] = np.exp(-np.abs(features['age'] - features['book_age']) / 30)
+        
+        # 6. Авторская лояльность
+        features['author_loyalty_boost'] = features['user_author_loyalty'] * features['author_popularity']
+        
+        # 7. Статус хита
+        features['hit_probability'] = (
+            (features['book_mean'] >= 8.0) * 
+            (features['book_count'] >= 5) * 
+            (features['book_high_ratio'] >= 0.7)
+        ).astype(float)
+        
+        # 8. Нишевость
+        features['niche_advantage'] = 1 / (1 + features['book_count']) * features['user_genre_diversity']
+        
+        # 9. Сложность книги
+        features['book_difficulty'] = features['book_std'] * features['book_rating_iqr']
+        
+        # 10. Эффект неожиданности
+        features['surprise_factor'] = np.abs(features['user_mean'] - features['book_mean']) * features['book_controversy']
+        
+        # 11. Временной тренд
+        if 'timestamp' in features.columns:
             features['timestamp'] = pd.to_datetime(features['timestamp'])
             features['year'] = features['timestamp'].dt.year
             features['month'] = features['timestamp'].dt.month
+            features['seasonal_effect'] = np.sin(2 * np.pi * features['month'] / 12)
         
-        # === ЗАПОЛНЕНИЕ ПРОПУСКОВ ===
+        # === АГРЕССИВНОЕ ЗАПОЛНЕНИЕ ПРОПУСКОВ ===
+        numerical_cols = features.select_dtypes(include=[np.number]).columns
+        for col in numerical_cols:
+            if 'mean' in col or 'score' in col:
+                features[col] = features[col].fillna(features[col].median())
+            elif 'count' in col or 'ratio' in col:
+                features[col] = features[col].fillna(0)
+            elif 'std' in col:
+                features[col] = features[col].fillna(1)
+            else:
+                features[col] = features[col].fillna(features[col].mean())
         
-        # Для пользователей без истории - средние значения по всем пользователям
-        features['user_rating_mean'] = features['user_rating_mean'].fillna(features['user_rating_mean'].mean())
-        features['user_rating_std'] = features['user_rating_std'].fillna(0)
-        features['user_books_rated'] = features['user_books_rated'].fillna(0)
-        features['user_unique_books'] = features['user_unique_books'].fillna(0)
-        features['user_wishlist_count'] = features['user_wishlist_count'].fillna(0)
-        
-        # Для книг без статистики
-        features['book_read_count'] = features['book_read_count'].fillna(1)
-        features['author_avg_rating'] = features['author_avg_rating'].fillna(features['book_avg_rating'].mean())
-        features['author_books_rated'] = features['author_books_rated'].fillna(1)
-        
-        # Демографические признаки
-        features['age'] = features['age'].fillna(features['age'].median())
-        features['gender'] = features['gender'].fillna(1)  # предположим мужской
-        
-        # === ФИНАЛЬНЫЕ ПРИЗНАКИ ===
-        
-        final_features = [
-            # Книжные признаки
-            'book_avg_rating', 'book_age', 'genre_count', 'book_read_count',
+        # === ОТБОР ЛУЧШИХ ПРИЗНАКОВ ===
+        power_features = [
+            # User power features
+            'user_mean', 'user_std', 'user_count', 'user_min', 'user_max',
+            'user_high', 'user_low', 'user_skew', 'user_unique_books',
+            'user_activity_days', 'user_reading_speed', 'user_rating_range',
+            'user_consistency', 'user_preference_strength', 'user_critical_ratio',
+            'user_genre_diversity', 'user_genre_mean', 'user_genre_std',
             
-            # Пользовательские признаки
-            'user_rating_mean', 'user_rating_std', 'user_books_rated', 
-            'user_unique_books', 'user_wishlist_count', 'age', 'gender',
+            # Book power features
+            'book_mean', 'book_std', 'book_count', 'book_min', 'book_max',
+            'book_q75', 'book_q25', 'book_high_count', 'book_unique_readers',
+            'book_rating_iqr', 'book_rating_span', 'book_controversy',
+            'book_quality_score', 'book_popularity_score', 'book_high_ratio',
+            'book_total_genres', 'book_unique_genres',
             
-            # Авторские признаки
-            'author_avg_rating', 'author_books_rated',
+            # Author power features
+            'author_mean', 'author_std', 'author_rating_count',
+            'author_unique_readers', 'author_unique_books',
+            'author_popularity', 'author_consistency',
             
-            # Взаимодействия
-            'publication_year', 'language', 'publisher'
+            # Interaction power features
+            'user_author_mean', 'user_author_count', 'user_author_std', 'user_author_loyalty',
+            
+            # Super engineered features
+            'super_synergy', 'predictability_score', 'level_alignment',
+            'weighted_popularity', 'age_compatibility', 'author_loyalty_boost',
+            'hit_probability', 'niche_advantage', 'book_difficulty', 'surprise_factor',
+            
+            # Basic features
+            'avg_rating', 'publication_year', 'age', 'gender', 'language', 'publisher'
         ]
         
-        # Добавляем временные признаки для train
-        if is_train:
-            final_features.extend(['year', 'month'])
+        # Добавляем временные если есть
+        if 'seasonal_effect' in features.columns:
+            power_features.extend(['year', 'month', 'seasonal_effect'])
         
-        # Оставляем только существующие колонки
-        available_features = [f for f in final_features if f in features.columns]
+        available_features = [f for f in power_features if f in features.columns]
         
         if is_train:
             self.feature_columns = available_features
         
-        print(f"Используется {len(available_features)} признаков")
+        print(f"💪 Используется {len(available_features)} МОЩНЫХ признаков")
         
         return features[available_features]
-
-    def prepare_data(self):
-        """Подготовка данных для обучения"""
-        print("\n=== ПОДГОТОВКА ДАННЫХ ===")
+    
+    def create_super_ensemble(self):
+        """Создание супер-ансамбля"""
+        print("🤖 СОЗДАНИЕ СУПЕР-АНСАМБЛЯ")
         
-        # Анализ целевой переменной
-        ratings = self.analyze_target_distribution()
+        models = [
+            ('rf_deep', RandomForestRegressor(
+                n_estimators=400,
+                max_depth=30,
+                min_samples_split=3,
+                min_samples_leaf=1,
+                max_features=0.8,
+                bootstrap=True,
+                random_state=42,
+                n_jobs=-1
+            )),
+            ('rf_wide', RandomForestRegressor(
+                n_estimators=300,
+                max_depth=25,
+                min_samples_split=5,
+                min_samples_leaf=2,
+                max_features='sqrt',
+                bootstrap=True,
+                random_state=43,
+                n_jobs=-1
+            )),
+            ('gbr_power', GradientBoostingRegressor(
+                n_estimators=1000,
+                learning_rate=0.03,
+                max_depth=7,
+                min_samples_split=8,
+                min_samples_leaf=3,
+                subsample=0.8,
+                max_features='sqrt',
+                random_state=42
+            )),
+            ('et_power', ExtraTreesRegressor(
+                n_estimators=350,
+                max_depth=28,
+                min_samples_split=4,
+                min_samples_leaf=1,
+                max_features=0.7,
+                bootstrap=True,
+                random_state=42,
+                n_jobs=-1
+            )),
+            ('ridge_power', Ridge(alpha=0.5, random_state=42))
+        ]
         
-        # Подготовка признаков для обучения
-        X = self.create_smart_features(self.train[self.train['has_read'] == 1], is_train=True)
-        y = self.train[self.train['has_read'] == 1]['rating']
+        # Оптимизированные веса
+        ensemble = VotingRegressor(models, weights=[4, 3, 4, 4, 1])
         
-        print(f"Данные для обучения: X.shape={X.shape}, y.shape={y.shape}")
+        return ensemble
+    
+    def train_power_model(self, X, y):
+        """Обучение мощной модели"""
+        print("\n🏋️ ОБУЧЕНИЕ МОЩНОЙ МОДЕЛИ")
         
-        return X, y
-
-    def train_optimized_model(self, X, y):
-        """Обучение оптимизированной модели"""
-        print("\n=== ОБУЧЕНИЕ МОДЕЛИ ===")
+        ensemble = self.create_super_ensemble()
         
-        # Разделение на train/validation
+        # Разделение данных
         X_train, X_val, y_train, y_val = train_test_split(
-            X, y, test_size=0.2, random_state=42, shuffle=True
+            X, y, test_size=0.15, random_state=42, shuffle=True
         )
         
-        print(f"Train: {X_train.shape}, Validation: {X_val.shape}")
+        print(f"📈 Разделение: Train {X_train.shape}, Val {X_val.shape}")
         
-        # Оптимизированная модель Random Forest
-        model = RandomForestRegressor(
-            n_estimators=200,           # Увеличили количество деревьев
-            max_depth=25,               # Увеличили глубину
-            min_samples_split=5,        # Уменьшили для большей гибкости
-            min_samples_leaf=2,         # Уменьшили для лучшего обучения
-            max_features='sqrt',        # Оптимально для Random Forest
-            bootstrap=True,
-            random_state=42,
-            n_jobs=-1,
-            verbose=0
-        )
+        # Обучение
+        ensemble.fit(X_train, y_train)
         
-        print("Обучение модели...")
-        model.fit(X_train, y_train)
-        
-        # Предсказание на валидации
-        y_pred = model.predict(X_val)
-        
-        # Метрики
+        # Валидация
+        y_pred = ensemble.predict(X_val)
         rmse = mean_squared_error(y_val, y_pred, squared=False)
         mae = mean_absolute_error(y_val, y_pred)
         
-        print(f"\nРезультаты на валидации:")
-        print(f"RMSE: {rmse:.4f}")
-        print(f"MAE: {mae:.4f}")
+        print(f"🎯 РЕЗУЛЬТАТЫ ВАЛИДАЦИИ:")
+        print(f"   RMSE: {rmse:.4f}")
+        print(f"   MAE: {mae:.4f}")
         
-        # Анализ ошибок по диапазонам оценок
-        self.analyze_prediction_errors(y_val, y_pred)
+        # Детальный анализ ошибок
+        errors = np.abs(y_val - y_pred)
+        print(f"🔍 АНАЛИЗ ОШИБОК:")
+        print(f"   Средняя ошибка: {errors.mean():.3f}")
+        print(f"   Медианная ошибка: {np.median(errors):.3f}")
         
-        # Важность признаков
-        feature_importance = pd.DataFrame({
-            'feature': X.columns,
-            'importance': model.feature_importances_
-        }).sort_values('importance', ascending=False)
-        
-        print(f"\nТоп-10 самых важных признаков:")
-        print(feature_importance.head(10))
-        
-        # Обучение на всех данных
-        print("\nОбучение финальной модели на всех данных...")
-        model.fit(X, y)
-        self.models['rf'] = model
-        
-        return model
-
-    def analyze_prediction_errors(self, y_true, y_pred):
-        """Анализ ошибок предсказания"""
-        errors = np.abs(y_true - y_pred)
-        
-        print("\nАнализ ошибок по диапазонам оценок:")
-        for rating_range in [(1, 3), (4, 6), (7, 8), (9, 10)]:
-            mask = (y_true >= rating_range[0]) & (y_true <= rating_range[1])
+        # Анализ по диапазонам
+        print(f"\n📊 ОШИБКИ ПО ДИАПАЗОНАМ:")
+        ranges = [(1, 4), (5, 7), (8, 10)]
+        for r_min, r_max in ranges:
+            mask = (y_val >= r_min) & (y_val <= r_max)
             if mask.any():
                 range_mae = errors[mask].mean()
-                count = mask.sum()
-                print(f"Оценки {rating_range[0]}-{rating_range[1]}: MAE = {range_mae:.3f} ({count} samples)")
-
-    def predict(self, test_df):
-        """Предсказание для тестовых данных"""
-        print("\n=== ПРЕДСКАЗАНИЕ ===")
+                range_count = mask.sum()
+                print(f"   {r_min}-{r_max}: MAE={range_mae:.3f} (n={range_count})")
         
-        # Подготовка признаков для теста
-        X_test = self.create_smart_features(test_df, is_train=False)
+        # Обучение на всех данных
+        print("\n🔥 Финальное обучение на всех данных...")
+        ensemble.fit(X, y)
+        self.model = ensemble
         
-        # Предсказание
-        predictions = self.models['rf'].predict(X_test)
+        return ensemble
+    
+    def power_post_processing(self, predictions):
+        """Мощная пост-обработка"""
+        print("🎨 МОЩНАЯ ПОСТ-ОБРАБОТКА")
         
-        # Пост-обработка предсказаний на основе анализа данных
-        # Учитываем, что большинство оценок высокие
-        predictions = self.post_process_predictions(predictions)
+        original_mean = predictions.mean()
         
-        return predictions
-
-    def post_process_predictions(self, predictions):
-        """Пост-обработка предсказаний на основе анализа данных"""
-        # Ограничиваем диапазон
-        predictions = np.clip(predictions, 1, 10)
+        # АГРЕССИВНЫЙ СДВИГ К ВЫСОКИМ ОЦЕНКАМ
+        predictions = np.where(predictions < 8.5, predictions + 0.8, predictions)
+        predictions = np.where(predictions < 7.0, predictions + 1.2, predictions)
+        predictions = np.where(predictions < 5.0, predictions + 1.5, predictions)
+        predictions = np.where(predictions < 3.0, predictions + 2.0, predictions)
         
-        # Сдвигаем предсказания в сторону высоких оценок (на основе анализа данных)
-        # Большинство оценок в данных высокие, поэтому сдвигаем предсказания вверх
-        predictions = np.where(predictions < 7, predictions + 0.5, predictions)
-        predictions = np.where(predictions > 9.5, 9.5, predictions)
-        
-        # Округляем до 0.5 для более естественного вида
+        # ОКРУГЛЕНИЕ
         predictions = np.round(predictions * 2) / 2
         
+        # ОГРАНИЧЕНИЕ
+        predictions = np.clip(predictions, 1.0, 10.0)
+        
+        print(f"📊 Изменения:")
+        print(f"   Было: {original_mean:.2f} -> Стало: {predictions.mean():.2f}")
+        
         return predictions
-
-    def create_submission(self, test_df, predictions, filename='submission_smart.csv'):
-        """Создание файла для отправки"""
-        print("\n=== СОЗДАНИЕ САБМИТА ===")
+    
+    def create_power_submission(self):
+        """Создание мощного сабмита"""
+        print("\n🏆 СОЗДАНИЕ МОЩНОГО САБМИТА")
         
-        submission = test_df[['user_id', 'book_id']].copy()
-        submission['rating_predict'] = predictions
+        # Подготовка теста
+        X_test = self.create_power_features(self.test, is_train=False)
         
-        # Сохраняем файл
-        submission.to_csv(filename, index=False)
-        print(f"Файл {filename} создан")
+        # Предсказание
+        predictions = self.model.predict(X_test)
         
-        # Детальная статистика предсказаний
-        print(f"\nСтатистика предсказаний:")
-        print(f"Min: {submission['rating_predict'].min():.3f}")
-        print(f"Max: {submission['rating_predict'].max():.3f}")
-        print(f"Mean: {submission['rating_predict'].mean():.3f}")
-        print(f"Std: {submission['rating_predict'].std():.3f}")
+        # Пост-обработка
+        final_predictions = self.power_post_processing(predictions)
         
-        # Распределение предсказаний
-        print(f"\nРаспределение предсказаний:")
-        for i in range(1, 11):
-            count = (submission['rating_predict'] == i).sum()
-            percentage = (submission['rating_predict'] == i).mean() * 100
-            if count > 0:
-                print(f"Оценка {i}: {count:4d} записей ({percentage:5.1f}%)")
+        # Создание сабмита
+        submission = self.test[['user_id', 'book_id']].copy()
+        submission['rating_predict'] = final_predictions
+        
+        # Сохранение
+        submission.to_csv('submission_power.csv', index=False)
+        print("✅ Файл submission_power.csv создан")
+        
+        # Детальная статистика
+        print(f"\n📊 ФИНАЛЬНАЯ СТАТИСТИКА:")
+        stats = submission['rating_predict'].describe()
+        for stat in ['mean', '50%', 'std', 'min', 'max']:
+            print(f"   {stat}: {stats[stat]:.3f}")
+        
+        # Распределение
+        print(f"\n🎯 РАСПРЕДЕЛЕНИЕ:")
+        for rating in [8, 9, 10]:
+            count = (submission['rating_predict'] == rating).sum()
+            pct = count / len(submission) * 100
+            print(f"   {rating}: {count:4d} ({pct:5.1f}%)")
         
         return submission
-
-    def run_smart_pipeline(self):
-        """Запуск умного пайплайна"""
-        print("=== ЗАПУСК УМНОГО ПАЙПЛАЙНА ===")
+    
+    def run_power_pipeline(self):
+        """Запуск мощного пайплайна"""
+        print("=" * 70)
+        print("🚀 МОЩНЫЙ ПАЙПЛАЙН АКТИВИРОВАН!")
+        print("=" * 70)
         
         try:
-            # 1. Загрузка данных
-            self.load_data()
+            # 1. Загрузка и анализ
+            self.load_and_analyze()
             
             # 2. Подготовка данных
-            X, y = self.prepare_data()
+            train_read = self.train[self.train['has_read'] == 1]
+            X = self.create_power_features(train_read, is_train=True)
+            y = train_read['rating']
+            X = X.loc[train_read.index]  # Гарантия совпадения
             
-            # 3. Обучение модели
-            self.train_optimized_model(X, y)
+            print(f"\n💪 ДАННЫЕ: X{X.shape}, y{y.shape}")
             
-            # 4. Предсказание
-            predictions = self.predict(self.test)
+            # 3. Обучение
+            self.train_power_model(X, y)
             
-            # 5. Создание сабмита
-            submission = self.create_submission(self.test, predictions)
+            # 4. Создание сабмита
+            submission = self.create_power_submission()
             
-            print("\n🎉 ПАЙПЛАЙН УСПЕШНО ЗАВЕРШЕН!")
+            print("\n" + "=" * 70)
+            print("🎉 МОЩНЫЙ ПАЙПЛАЙН ЗАВЕРШЕН! ОЖИДАЕМ ПРОРЫВ!")
+            print("=" * 70)
             
             return submission
             
         except Exception as e:
-            print(f"❌ Ошибка: {e}")
+            print(f"❌ ОШИБКА: {e}")
             import traceback
             traceback.print_exc()
             
-            # Резервный сабмит
+            # Фолбэк
             submission = self.test[['user_id', 'book_id']].copy()
-            submission['rating_predict'] = 8.0  # Средняя высокая оценка
+            submission['rating_predict'] = 9.0
             submission.to_csv('submission_backup.csv', index=False)
-            print("Создан резервный submission файл")
             return submission
 
-# Запуск программы
+# ЗАПУСК
 if __name__ == "__main__":
-    predictor = SmartBookRatingPredictor()
-    submission = predictor.run_smart_pipeline()
+    power = PowerRatingPredictor()
+    submission = power.run_power_pipeline()
     
-    print("\n" + "="*50)
-    print("Sample предсказаний:")
-    print(submission.head(10))
-    print("="*50)
+    print("\n🔥 ПРИМЕР ПРЕДСКАЗАНИЙ:")
+    print(submission.head(8))
