@@ -1,127 +1,218 @@
 import pandas as pd
 import numpy as np
+from scipy import stats
 
-class FinalBoss:
+class PrecisionPredictor:
     def __init__(self):
         pass
     
-    def load_data(self):
-        """БЫСТРАЯ ЗАГРУЗКА"""
+    def load_and_analyze(self):
+        """Глубокий анализ данных"""
         train = pd.read_csv('train.csv')
         test = pd.read_csv('test.csv')
-        return train[train['has_read'] == 1], test
+        books = pd.read_csv('books.csv')
+        users = pd.read_csv('users.csv')
+        
+        train_read = train[train['has_read'] == 1]
+        
+        # ТОЧНЫЙ АНАЛИЗ РАСПРЕДЕЛЕНИЯ
+        ratings = train_read['rating']
+        print("🎯 ТОЧНОЕ РАСПРЕДЕЛЕНИЕ ОЦЕНОК:")
+        for i in np.arange(1, 10.5, 0.5):
+            count = ((ratings >= i - 0.25) & (ratings < i + 0.25)).sum()
+            pct = count / len(ratings) * 100
+            if count > 0:
+                print(f"  {i:3.1f}: {count:6d} ({pct:5.1f}%)")
+        
+        return train_read, test, books, users
     
-    def analyze_cold_start(self, train_read, test):
-        """АНАЛИЗ ХОЛОДНОГО СТАРТА"""
-        train_users = set(train_read['user_id'])
-        train_books = set(train_read['book_id'])
-        test_users = set(test['user_id'])
-        test_books = set(test['book_id'])
+    def calculate_precise_means(self, train_read):
+        """Точные статистики с доверительными интервалами"""
+        # USER STATS
+        user_stats = train_read.groupby('user_id').agg({
+            'rating': ['mean', 'count', 'std'],
+            'book_id': 'nunique'
+        })
+        user_stats.columns = ['user_mean', 'user_count', 'user_std', 'user_uniq_books']
         
-        new_users = len(test_users - train_users)
-        new_books = len(test_books - train_books)
-        
-        print(f"🔥 НОВЫЕ ПОЛЬЗОВАТЕЛИ: {new_users}/{len(test_users)} ({new_users/len(test_users)*100:.1f}%)")
-        print(f"🔥 НОВЫЕ КНИГИ: {new_books}/{len(test_books)} ({new_books/len(test_books)*100:.1f}%)")
-        
-        return new_users > 0 or new_books > 0
-    
-    def create_smart_baseline(self, train_read, test):
-        """УМНЫЙ БЕЙЗЛАЙН"""
-        # ГЛОБАЛЬНОЕ СРЕДНЕЕ
+        # Регуляризация для пользователей с малым количеством оценок
         global_mean = train_read['rating'].mean()
+        user_stats['user_mean_reg'] = (
+            (user_stats['user_mean'] * user_stats['user_count'] + global_mean * 5) / 
+            (user_stats['user_count'] + 5)
+        )
         
-        # СРЕДНИЕ ПОЛЬЗОВАТЕЛЕЙ И КНИГ
-        user_means = train_read.groupby('user_id')['rating'].mean()
-        book_means = train_read.groupby('book_id')['rating'].mean()
+        # BOOK STATS
+        book_stats = train_read.groupby('book_id').agg({
+            'rating': ['mean', 'count', 'std'],
+            'user_id': 'nunique'
+        })
+        book_stats.columns = ['book_mean', 'book_count', 'book_std', 'book_uniq_users']
         
+        # Регуляризация для книг с малым количеством оценок
+        book_stats['book_mean_reg'] = (
+            (book_stats['book_mean'] * book_stats['book_count'] + global_mean * 3) / 
+            (book_stats['book_count'] + 3)
+        )
+        
+        return user_stats.reset_index(), book_stats.reset_index(), global_mean
+    
+    def bayesian_prediction(self, test, user_stats, book_stats, global_mean):
+        """Байесовское предсказание с регуляризацией"""
         predictions = []
+        confidence_scores = []
+        
         for _, row in test.iterrows():
             user_id, book_id = row['user_id'], row['book_id']
             
-            user_known = user_id in user_means.index
-            book_known = book_id in book_means.index
+            # Ищем данные
+            user_data = user_stats[user_stats['user_id'] == user_id]
+            book_data = book_stats[book_stats['book_id'] == book_id]
             
-            if user_known and book_known:
-                pred = (user_means[user_id] + book_means[book_id]) / 2
-            elif user_known:
-                pred = user_means[user_id]
-            elif book_known:
-                pred = book_means[book_id]
-            else:
-                pred = global_mean
+            # БАЙЕСОВСКАЯ КОМБИНАЦИЯ
+            if len(user_data) > 0 and len(book_data) > 0:
+                user_mean = user_data['user_mean_reg'].iloc[0]
+                user_count = user_data['user_count'].iloc[0]
+                book_mean = book_data['book_mean_reg'].iloc[0]
+                book_count = book_data['book_count'].iloc[0]
                 
-            predictions.append(pred)
+                # ВЕСА НА ОСНОВЕ ДОСТОВЕРНОСТИ ДАННЫХ
+                user_weight = np.log1p(user_count) / 10  # 0-1 вес
+                book_weight = np.log1p(book_count) / 10  # 0-1 вес
+                
+                # НОРМАЛИЗАЦИЯ ВЕСОВ
+                total_weight = user_weight + book_weight
+                if total_weight > 0:
+                    user_weight /= total_weight
+                    book_weight /= total_weight
+                else:
+                    user_weight, book_weight = 0.4, 0.6
+                
+                prediction = user_mean * user_weight + book_mean * book_weight
+                confidence = min(1.0, (user_weight + book_weight) / 2)
+                
+            elif len(user_data) > 0:
+                user_mean = user_data['user_mean_reg'].iloc[0]
+                user_count = user_data['user_count'].iloc[0]
+                prediction = user_mean * 0.8 + global_mean * 0.2
+                confidence = min(1.0, np.log1p(user_count) / 10)
+                
+            elif len(book_data) > 0:
+                book_mean = book_data['book_mean_reg'].iloc[0]
+                book_count = book_data['book_count'].iloc[0]
+                prediction = book_mean * 0.8 + global_mean * 0.2
+                confidence = min(1.0, np.log1p(book_count) / 10)
+                
+            else:
+                prediction = global_mean
+                confidence = 0.0
+                
+            predictions.append(prediction)
+            confidence_scores.append(confidence)
             
-        return np.array(predictions)
+        return np.array(predictions), np.array(confidence_scores)
     
-    def optimize_predictions(self, predictions):
-        """ФИНАЛЬНАЯ ОПТИМИЗАЦИЯ"""
-        # ЦЕЛЕВОЕ РАСПРЕДЕЛЕНИЕ НА ОСНОВЕ ТРЕНИРОВОЧНЫХ ДАННЫХ
-        target_mean = 8.7  # Чуть выше среднего
-        target_std = 1.2   # Немного вариативности
+    def optimize_distribution(self, predictions, confidence_scores):
+        """Оптимизация распределения под метрики"""
+        # АНАЛИЗ ТЕКУЩЕГО РАСПРЕДЕЛЕНИЯ
+        current_stats = {
+            'mean': np.mean(predictions),
+            'std': np.std(predictions),
+            'q25': np.percentile(predictions, 25),
+            'q50': np.percentile(predictions, 50),
+            'q75': np.percentile(predictions, 75)
+        }
         
-        # НОРМАЛИЗУЕМ И ПЕРЕМАСШТАБИРУЕМ
-        current_mean = np.mean(predictions)
-        current_std = np.std(predictions)
+        print(f"📊 ТЕКУЩЕЕ РАСПРЕДЕЛЕНИЕ:")
+        print(f"  Mean: {current_stats['mean']:.3f}")
+        print(f"  Std:  {current_stats['std']:.3f}")
+        print(f"  25%:  {current_stats['q25']:.2f}, 50%: {current_stats['q50']:.2f}, 75%: {current_stats['q75']:.2f}")
         
-        if current_std > 0:
-            normalized = (predictions - current_mean) / current_std
-            optimized = normalized * target_std + target_mean
+        # ЦЕЛЕВОЕ РАСПРЕДЕЛЕНИЕ (основано на реальных данных)
+        target_mean = 8.55
+        target_std = 1.25
+        
+        # ПРЕОБРАЗОВАНИЕ С СОХРАНЕНИЕМ ОТНОСИТЕЛЬНЫХ РАЗЛИЧИЙ
+        if current_stats['std'] > 0:
+            z_scores = (predictions - current_stats['mean']) / current_stats['std']
+            optimized = z_scores * target_std + target_mean
         else:
             optimized = np.full_like(predictions, target_mean)
         
-        # ОГРАНИЧИВАЕМ И ОКРУГЛЯЕМ
+        # УЧЕТ ДОВЕРИЯ: для низкодостоверных предсказаний ближе к среднему
+        confidence_adjustment = (optimized - target_mean) * (1 - confidence_scores)
+        optimized = target_mean + confidence_adjustment
+        
+        # ПОСТ-ОБРАБОТКА
         optimized = np.clip(optimized, 1.0, 10.0)
-        optimized = np.round(optimized * 2) / 2  # До 0.5
+        
+        # ТОЧНОЕ ОКРУГЛЕНИЕ ДО 0.1 (больше точности)
+        optimized = np.round(optimized * 10) / 10
+        
+        print(f"📊 ОПТИМИЗИРОВАННОЕ РАСПРЕДЕЛЕНИЕ:")
+        print(f"  Mean: {np.mean(optimized):.3f}")
+        print(f"  Std:  {np.std(optimized):.3f}")
         
         return optimized
     
-    def create_final_submission(self, test, predictions):
-        """ФИНАЛЬНЫЙ САБМИТ"""
+    def create_precision_submission(self, test, predictions):
+        """Создание точного сабмита"""
         submission = test[['user_id', 'book_id']].copy()
         submission['rating_predict'] = predictions
-        submission.to_csv('submission_FINAL_BOSS.csv', index=False)
+        submission.to_csv('submission_PRECISION.csv', index=False)
         
-        # СТАТИСТИКА
+        # ДЕТАЛЬНЫЙ АНАЛИЗ
         stats = submission['rating_predict'].describe()
-        print(f"📊 ФИНАЛЬНАЯ СТАТИСТИКА:")
-        print(f"• Mean: {stats['mean']:.3f}")
-        print(f"• Std: {stats['std']:.3f}")
-        print(f"• Min: {stats['min']:.1f}, Max: {stats['max']:.1f}")
+        print(f"\n🎯 ФИНАЛЬНАЯ СТАТИСТИКА:")
+        print(f"• Count:  {stats['count']:.0f}")
+        print(f"• Mean:   {stats['mean']:.3f}")
+        print(f"• Std:    {stats['std']:.3f}")
+        print(f"• Min:    {stats['min']:.2f}")
+        print(f"• 25%:    {stats['25%']:.2f}")
+        print(f"• 50%:    {stats['50%']:.2f}")
+        print(f"• 75%:    {stats['75%']:.2f}")
+        print(f"• Max:    {stats['max']:.2f}")
+        
+        # РАСПРЕДЕЛЕНИЕ С ШАГОМ 0.5
+        print(f"\n📈 РАСПРЕДЕЛЕНИЕ:")
+        for i in np.arange(1, 10.5, 0.5):
+            count = ((submission['rating_predict'] >= i - 0.25) & 
+                    (submission['rating_predict'] < i + 0.25)).sum()
+            pct = count / len(submission) * 100
+            if count > 0:
+                print(f"  {i:3.1f}: {count:4d} ({pct:5.1f}%)")
         
         return submission
     
-    def execute(self):
-        """ВЫПОЛНЕНИЕ"""
-        print("=" * 50)
-        print("💀 FINAL BOSS MODE ACTIVATED")
-        print("=" * 50)
+    def run_precision_model(self):
+        """Запуск точной модели"""
+        print("=" * 60)
+        print("🎯 PRECISION PREDICTOR v3.0")
+        print("=" * 60)
         
-        train_read, test = self.load_data()
+        train_read, test, books, users = self.load_and_analyze()
         
-        # ПРОВЕРЯЕМ ХОЛОДНЫЙ СТАРТ
-        has_cold_start = self.analyze_cold_start(train_read, test)
-        if has_cold_start:
-            print("⚠️  ВНИМАНИЕ: Есть новые пользователи/книги!")
+        # ТОЧНЫЕ СТАТИСТИКИ
+        user_stats, book_stats, global_mean = self.calculate_precise_means(train_read)
         
-        # СОЗДАЕМ ПРЕДСКАЗАНИЯ
-        predictions = self.create_smart_baseline(train_read, test)
+        # БАЙЕСОВСКОЕ ПРЕДСКАЗАНИЕ
+        predictions, confidence_scores = self.bayesian_prediction(test, user_stats, book_stats, global_mean)
         
-        # ОПТИМИЗИРУЕМ
-        final_predictions = self.optimize_predictions(predictions)
+        # ОПТИМИЗАЦИЯ РАСПРЕДЕЛЕНИЯ
+        final_predictions = self.optimize_distribution(predictions, confidence_scores)
         
-        # СОЗДАЕМ САБМИТ
-        submission = self.create_final_submission(test, final_predictions)
+        # САБМИТ
+        submission = self.create_precision_submission(test, final_predictions)
         
-        print("=" * 50)
-        print("🎯 MISSION COMPLETE")
-        print("=" * 50)
+        print("=" * 60)
+        print("💪 PRECISION MISSION COMPLETE!")
+        print("=" * 60)
         
         return submission
 
-# ЗАПУСК
+# ЗАПУСК ТОЧНОЙ МОДЕЛИ
 if __name__ == "__main__":
-    boss = FinalBoss()
-    submission = boss.execute()
-    print(submission.head())
+    precision = PrecisionPredictor()
+    submission = precision.run_precision_model()
+    print("\n🔍 ПРИМЕР ПРЕДСКАЗАНИЙ:")
+    print(submission.head(10))
